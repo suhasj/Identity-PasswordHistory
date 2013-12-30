@@ -16,10 +16,10 @@ namespace Identity_PasswordHistory
         public void ConfigureAuth(IAppBuilder app)
         {
             // Configure the UserManager
-            app.UseUserManagerFactory(new UserManagerOptions<ApplicationUserManager>()
+            app.UseUserManagerFactory(new IdentityFactoryOptions<ApplicationUserManager>()
             {
                 DataProtectionProvider = app.GetDataProtectionProvider(),
-                Provider = new UserManagerProvider<ApplicationUserManager>()
+                Provider = new IdentityFactoryProvider<ApplicationUserManager>()
                 {
                     OnCreate = ApplicationUserManager.Create
                 }

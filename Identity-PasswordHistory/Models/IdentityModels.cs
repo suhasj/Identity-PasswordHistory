@@ -6,6 +6,8 @@ using Microsoft.AspNet.Identity.Owin;
 using System.Collections.Generic;
 using System.Data.Entity;
 using System;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Linq;
 
 namespace Identity_PasswordHistory.Models
 {
@@ -15,7 +17,7 @@ namespace Identity_PasswordHistory.Models
         public ApplicationUser()
             : base()
         {
-            PasswordHistory = new PasswordQueue<string>(2);
+            _PasswordHistory = new PasswordQueue<string>(2);
         }
         public async Task<ClaimsIdentity> GenerateUserIdentityAsync(UserManager<ApplicationUser> manager)
         {
@@ -25,14 +27,32 @@ namespace Identity_PasswordHistory.Models
             return userIdentity;
         }
 
-        public PasswordQueue<string> PasswordHistory { get; set; }
-    }
+        [NotMapped]
+        public PasswordQueue<string> _PasswordHistory { get; set; }
 
+        public string PasswordHistory
+        {
+            get
+            {
+                return String.Join(":", _PasswordHistory.ToArray());
+            }
+            set
+            {
+                _PasswordHistory = new PasswordQueue<string>(value.Split(':'), 2);
+            }
+        }
+    }
     public class PasswordQueue<T> : Queue<T>
     {
         public int Limit { get; set; }
         public PasswordQueue(int limit)
             : base(limit)
+        {
+            Limit = limit;
+        }
+
+        public PasswordQueue(IEnumerable<T> collection, int limit)
+            : base(collection)
         {
             Limit = limit;
         }
@@ -62,7 +82,7 @@ namespace Identity_PasswordHistory.Models
         {
         }
 
-        public static ApplicationUserManager Create(UserManagerOptions<ApplicationUserManager> options)
+        public static ApplicationUserManager Create(IdentityFactoryOptions<ApplicationUserManager> options)
         {
             var manager = new ApplicationUserManager(new ApplicationUserStore(new ApplicationDbContext()));
             // Configure the application user manager
@@ -85,7 +105,7 @@ namespace Identity_PasswordHistory.Models
         {
             var user = await FindByIdAsync(userId);
 
-            if (user.PasswordHistory.Contains(PasswordHasher.HashPassword(newPassword)))
+            if (user._PasswordHistory.ToArray().Where(x => PasswordHasher.VerifyHashedPassword(x, newPassword) == PasswordVerificationResult.Success).Count() > 0)
             {
                 return await Task.FromResult(IdentityResult.Failed("Cannot reuse old password"));
             }
@@ -101,9 +121,10 @@ namespace Identity_PasswordHistory.Models
 
     public class ApplicationUserStore : UserStore<ApplicationUser>
     {
-        public ApplicationUserStore(DbContext context):base(context)
+        public ApplicationUserStore(DbContext context)
+            : base(context)
         {
-                
+
         }
         public override async Task CreateAsync(ApplicationUser user)
         {
@@ -114,7 +135,7 @@ namespace Identity_PasswordHistory.Models
 
         public async Task AddToPasswordHistoryAsync(ApplicationUser user, string password)
         {
-            user.PasswordHistory.Enqueue(password);
+            user._PasswordHistory.Enqueue(password);
 
             await UpdateAsync(user).ConfigureAwait(false);
         }
