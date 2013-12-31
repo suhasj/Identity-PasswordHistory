@@ -8,6 +8,8 @@ using System.Data.Entity;
 using System;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
+using System.ComponentModel.DataAnnotations;
+using System.Diagnostics;
 
 namespace Identity_PasswordHistory.Models
 {
@@ -17,7 +19,10 @@ namespace Identity_PasswordHistory.Models
         public ApplicationUser()
             : base()
         {
-            _PasswordHistory = new PasswordQueue<string>(2);
+            if (PreviousUserPasswords == null)
+            {
+                PreviousUserPasswords = new List<PreviousPassword>();
+            }
         }
         public async Task<ClaimsIdentity> GenerateUserIdentityAsync(UserManager<ApplicationUser> manager)
         {
@@ -27,44 +32,24 @@ namespace Identity_PasswordHistory.Models
             return userIdentity;
         }
 
-        [NotMapped]
-        public PasswordQueue<string> _PasswordHistory { get; set; }
-
-        public string PasswordHistory
-        {
-            get
-            {
-                return String.Join(":", _PasswordHistory.ToArray());
-            }
-            set
-            {
-                _PasswordHistory = new PasswordQueue<string>(value.Split(':'), 2);
-            }
-        }
+        public virtual IList<PreviousPassword> PreviousUserPasswords { get; set; }
     }
-    public class PasswordQueue<T> : Queue<T>
+
+    public class PreviousPassword
     {
-        public int Limit { get; set; }
-        public PasswordQueue(int limit)
-            : base(limit)
+        public PreviousPassword()
         {
-            Limit = limit;
+            CreateDate = DateTimeOffset.Now;
         }
 
-        public PasswordQueue(IEnumerable<T> collection, int limit)
-            : base(collection)
-        {
-            Limit = limit;
-        }
+        [Key, Column(Order = 0)]
+        public string Password { get; set; }
+        public DateTimeOffset CreateDate { get; set; }
 
-        public new void Enqueue(T item)
-        {
-            if (this.Count >= this.Limit)
-            {
-                this.Dequeue();
-            }
-            base.Enqueue(item);
-        }
+        [Key, Column(Order = 1)]
+        public string UserId { get; set; }
+
+        public virtual ApplicationUser User { get; set; }
     }
 
     public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
@@ -103,19 +88,42 @@ namespace Identity_PasswordHistory.Models
 
         public override async Task<IdentityResult> ChangePasswordAsync(string userId, string currentPassword, string newPassword)
         {
-            var user = await FindByIdAsync(userId);
-
-            if (user._PasswordHistory.ToArray().Where(x => PasswordHasher.VerifyHashedPassword(x, newPassword) == PasswordVerificationResult.Success).Count() > 0)
+            if (! await IsPreviousPassword(userId, newPassword))
             {
                 return await Task.FromResult(IdentityResult.Failed("Cannot reuse old password"));
             }
-            else
+
+            var store = Store as ApplicationUserStore;
+            await store.AddToPreviousPasswordsAsync(await FindByIdAsync(userId), PasswordHasher.HashPassword(newPassword));
+            
+            return await base.ChangePasswordAsync(userId, currentPassword, newPassword);
+        }
+
+        public override async Task<IdentityResult> ResetPasswordAsync(string userId, string token, string newPassword)
+        {
+            if (!await IsPreviousPassword(userId, newPassword))
             {
-                var store = Store as ApplicationUserStore;
-                await store.AddToPasswordHistoryAsync(user, PasswordHasher.HashPassword(newPassword));
+                return await Task.FromResult(IdentityResult.Failed("Cannot reuse old password"));
             }
 
-            return await base.ChangePasswordAsync(userId, currentPassword, newPassword);
+            var store = Store as ApplicationUserStore;
+            await store.AddToPreviousPasswordsAsync(await FindByIdAsync(userId), PasswordHasher.HashPassword(newPassword));
+
+            return await base.ResetPasswordAsync(userId, token, newPassword);
+        }
+
+        private async Task<bool> IsPreviousPassword(string userId, string newPassword)
+        {
+            var user = await FindByIdAsync(userId);
+
+            if (user.PreviousUserPasswords.OrderByDescending(x => x.CreateDate).
+                Select(x => x.Password).Take(5).Where(x => PasswordHasher.VerifyHashedPassword(x, newPassword) == PasswordVerificationResult.Success).
+                Count() > 0)
+            {
+                return true;
+            }
+
+            return false;
         }
     }
 
@@ -130,12 +138,12 @@ namespace Identity_PasswordHistory.Models
         {
             await base.CreateAsync(user);
 
-            await AddToPasswordHistoryAsync(user, user.PasswordHash);
+            await AddToPreviousPasswordsAsync(user, user.PasswordHash);
         }
 
-        public async Task AddToPasswordHistoryAsync(ApplicationUser user, string password)
+        public async Task AddToPreviousPasswordsAsync(ApplicationUser user, string password)
         {
-            user._PasswordHistory.Enqueue(password);
+            user.PreviousUserPasswords.Add(new PreviousPassword() { UserId = user.Id, Password = user.PasswordHash });
 
             await UpdateAsync(user).ConfigureAwait(false);
         }
